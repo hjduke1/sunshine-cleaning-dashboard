@@ -1,16 +1,43 @@
 export const runtime = 'edge';
 
+// Cache for 5 minutes
+let cachedData = null;
+let cacheTime = null;
+const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes in milliseconds
+
 export async function GET() {
   try {
+    // Return cached data if still valid
+    if (cachedData && cacheTime && (Date.now() - cacheTime < CACHE_DURATION)) {
+      return Response.json(cachedData);
+    }
+
     // Google Sheets public CSV export
     const SHEET_ID = '1xXs08NoyMEBeUCRO_1vvxZi6hkQ3kYVt95d47yguykw';
     const GID = '0'; // First sheet
     
     const csvUrl = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=csv&gid=${GID}`;
     
-    const response = await fetch(csvUrl);
+    // Add retry logic with delay
+    let response;
+    let retries = 3;
+    
+    while (retries > 0) {
+      response = await fetch(csvUrl);
+      
+      if (response.ok) break;
+      
+      // If rate limited, wait before retry
+      if (response.status === 429) {
+        await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2 seconds
+        retries--;
+      } else {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+    }
+    
     if (!response.ok) {
-      throw new Error('Failed to fetch sheet data');
+      throw new Error('Failed to fetch sheet data after retries');
     }
     
     const csvText = await response.text();
@@ -67,7 +94,7 @@ export async function GET() {
     const currentMonthRevenue = totalRevenue * 0.15; // Approximate
     const previousMonthRevenue = totalRevenue * 0.13; // Approximate
     
-    return Response.json({
+    const result = {
       totalRevenue,
       totalCleanings,
       totalExpenses,
@@ -75,11 +102,27 @@ export async function GET() {
       topClients,
       recentAppointments: appointments,
       currentMonthRevenue,
-      previousMonthRevenue
-    });
+      previousMonthRevenue,
+      cachedAt: new Date().toISOString()
+    };
+    
+    // Update cache
+    cachedData = result;
+    cacheTime = Date.now();
+    
+    return Response.json(result);
     
   } catch (error) {
     console.error('Error fetching data:', error);
+    
+    // If we have cached data, return it even if stale
+    if (cachedData) {
+      return Response.json({
+        ...cachedData,
+        warning: 'Using cached data due to error'
+      });
+    }
+    
     return Response.json(
       { error: 'Failed to fetch data', details: error.message },
       { status: 500 }
